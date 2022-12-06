@@ -1,0 +1,3 @@
+#!/bin/sh
+
+aarch64-linux-gnu-objdump "$@"
