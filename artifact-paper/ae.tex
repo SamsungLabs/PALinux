@@ -1,0 +1,180 @@
+% LaTeX template for Artifact Evaluation V20220119
+%
+% Original Authors 
+% * Grigori Fursin (cTuning foundation, France) 2014-2020
+% * Bruce Childers (University of Pittsburgh, USA) 2014
+% 
+% Modified by
+% * Clémentine Maurice (CNRS, France) 2021-2022
+% * Cristiano Giuffrida (Vrije Universiteit Amsterdam, Netherlands) 2021-2022
+%
+% (C)opyright 2014-2022
+%
+% CC BY 4.0 license
+%
+
+\documentclass[letterpaper,twocolumn,10pt]{article}
+\usepackage{usenix-2020-09}
+
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{menukeys}
+\usepackage[functional]{usenixbadges}
+
+\pagestyle{empty}
+
+\lstdefinestyle{code_style}{
+    belowcaptionskip=1\baselineskip,
+    breaklines=true,
+    frame=none,
+    numbers=none,
+    basicstyle=\footnotesize\ttfamily,
+    commentstyle=\itshape\color{purple!40!black},
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% To add the badges to the final version after notification, first download
+% the appropriate `usenixbadges` package version as detailed on the Final
+% Artifact Appendix instructions page on the USENIX Security website.
+%
+% Then, uncomment the following line using the appropriate options:
+% \usepackage[available,functional,reproduced]{usenixbadges}
+%
+% In the options, list the badges that have been awarded to your paper.
+% The possible badges are:
+%
+%  * `available`  --- affix the "Artifacts Available" badge
+%  * `functional` --- affix the "Artifacts Functional" badge
+%  * `reproduced` --- affix the "Results Reproduced" badge
+%
+% Example:
+%  \usepackage[available,functional]{usenixbadges}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+
+\special{papersize=8.5in,11in}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% When adding this appendix to your paper, 
+% please remove the part above
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+\section{Artifact Appendix}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% See the Artifact Appendix guidelines page on the USENIX
+% Security website to compile the appendix. Please preserve
+% the provided Artifact Appendix template as much as
+% possible (e.g., keep the original (sub)section names
+% and order). 
+%
+% See also examples of past reproduced papers with a similar Artifact Appendix at: https://cknowledge.io/?q=%22reproduced-papers%22+AND+lib+AND+%28secur*+OR+harden*+OR+mitigat*+OR+defen*+OR+attack*+OR+bug*+OR+vulnerab*%29
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Abstract}
+
+Our artifact provides code and binaries and scripts to reproduce experimental results in the paper.
+As for benchmarks, we demonstrated experimental results on two real machines (Mac mini based on M1 chip, and rpi3),
+but our artifact has been prepared to run only on Mac mini, since rpi3 lacks a support of ARM Pointer Authentication (PA).
+Other results than benchmarks can be reproducible on host PC machines.
+
+\subsection{Artifact check-list (meta-information)}
+
+{\small
+\begin{itemize}
+  \item {\bf Algorithm: } compiler instrumentation, pointer analysis
+  \item {\bf Program: } Linux kernel, LLVM plugin, GCC plugin, python scripts (all sources and binaries included)
+  \item {\bf Compilation: } LLVM 9.0, Modified GCC 7.3 (binaries and sources included)
+  \item {\bf Transformations: } Security check insertion implemented as a GCC plugin.
+  \item {\bf Binary: } Pre-built root file system, kernel images with various configurations.
+  \item {\bf Run-time environment: } Ubuntu 18.04 or 20.04. Host environment, not virtual environment, is recommended.
+  \item {\bf Hardware: } Mac mini with M1 chip
+  \item {\bf Security, privacy, and ethical concerns: } Some of shared codes are subject to intellectual property. Please do not redistribute them.
+  \item {\bf Output: } static analysis results of context analyzer and static validator, benchmark results on Mac mini.
+  \item {\bf How much disk space required (approximately)?: } The artifact repository takes up around 5GB.
+  \item {\bf How much time is needed to prepare workflow (approximately)?: } It takes about 1-2 hours to prepare.
+  \item {\bf How much time is needed to complete experiments (approximately)?: } It takes about 1 hour to complete.
+  \item {\bf Publicly available (explicitly provide evolving version reference)?: } Some codes, which have no issue of intellectual property, will be available at \url{https://github.com/SamsungLabs/PALinux/} soon.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Description}
+
+\subsubsection{How to access}
+
+You can access all materials for the artifact evaluation through a repository in the Bitbucket:
+\url{https://bitbucket.org/jinb-park/pal-ae/}.
+Note that this is a private repo because we cannot open the source code to the public yet due to an issue of intellectual property.
+Reviewers can access this repo by using the SSH key posted on "Artifact access" section in the hotcrp submission site.
+
+\subsubsection{Hardware dependencies}
+
+It is required to have a physical access to a mac mini built on M1 chip for reproducing benchmarks.
+Also, it requires a USB-to-C cable and a HDMI cable for connection between the mac mini and host PC.
+
+\subsubsection{Software dependencies}
+
+We have confirmed this artifact on Ubuntu 18.04/20.04 host machines, not virtual guest machines.
+We also tried our artifact on virtual guests but found that some of experiments can go wrong.
+So we recommend running this on host machines if possible.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Installation}
+
+First of all, copy the SSH key content into a file (e.g., pal\_rsa), and then type the following command:
+\lstinputlisting[label={lst:listing-cpp}, language=bash, style=code_style]{code/install.sh}
+
+Next, follow the guide, README.md, in the repository.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Experiment workflow}
+
+Our experiment workflow is twofold.
+
+\noindent First, for functional evaluation, run the context analyzer to get a CFI precision report and a guide for dynamic contexts;
+then build linux kernel along with the guide; lastly, run the static validator on the built kernel binary to find out insecure uses of PA (Pointer Authentication) instructions.
+See "full-workflow/README.md" to get to know all instructions needed for it.
+
+\noindent Second, for reproducing key results, we put appropriate prebuilt files as well as a README file that contains required instructions in each directory in the repository.
+(analyzer/, precision/, static-validator/, benchmarks/)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Evaluation and expected results}
+
+Key results that are reproducible are:
+{\small
+\begin{itemize}
+  \item {\bf Context analyzer (Table 6): } We present the prebuilt llvm bitcode file for a whole kernel binary and
+  the source code of context analyzer in the form of LLVM plugin. See "analyzer/README.md" for detail.
+  \item {\bf CFI precision (Table 2 and Table 3): } It shows how CFI precision gets better as dynamic contexts are used, and reproduces Table 2 and Table 3 in our paper. See "precision/README.md" for detail.
+  \item {\bf Static validator (Section 4.5 - Results.): } We give an in-depth analysis for violations that our validator found (Section 4.5 Results).
+  Also, we present two prebuilt kernel binaries (iOS and PAL) and validator's code written in python, allowing to run our validator. See "static-validator/README.md" for detail.
+  \item {\bf Benchmarks on Mac mini (Table C1 and Section 6.3 - Performance Overhead)): } We present kernel images built with or without PAL,
+  and a root filesystem that contains macro- and micro-benchmarks, and a helper script to run them on Mac mini. See "benchmarks/README.md" for detail.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Experiment customization}
+
+Each README.md in the bitbucket repo explains on how to customize experiments in detail.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Notes}
+
+The results of benchmarks can fluctuate.
+Even when we used the same mac mini, we saw that its results can vary around 2 times slower or faster at maximum,
+especially for benchmarks that take a relatively short time.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Version}
+%%%%%%%%%%%%%%%%%%%%
+% Obligatory.
+% Do not change/remove.
+%%%%%%%%%%%%%%%%%%%%
+Based on the LaTeX template for Artifact Evaluation V20220119.
+
+\end{document}
