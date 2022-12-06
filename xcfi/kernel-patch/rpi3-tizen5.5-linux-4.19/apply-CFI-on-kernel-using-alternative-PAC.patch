@@ -1,0 +1,647 @@
+From dd4ff905f8d6b415fe75b449a1428128ca6e175b Mon Sep 17 00:00:00 2001
+From: Sungbae Yoo <sungbae.yoo@samsung.com>
+Date: Fri, 1 Nov 2019 16:45:18 +0900
+Subject: [PATCH] Apply CFI on kernel using alternative PAC
+
+Signed-off-by: Sungbae Yoo <sungbae.yoo@samsung.com>
+
+diff --git a/Makefile b/Makefile
+index e84966c49117..7801761439c5 100644
+--- a/Makefile
++++ b/Makefile
+@@ -692,6 +692,49 @@ stackp-flags-$(CONFIG_STACKPROTECTOR_STRONG)      := -fstack-protector-strong
+ 
+ KBUILD_CFLAGS += $(stackp-flags-y)
+ 
++ifdef CONFIG_ALTERNATIVE_KPAC
++KPAC_PFLAGS := -fplugin-arg-xcfi-pac-key=none
++endif
++
++ifneq (${KPAC_PFLAGS},)
++KBUILD_CFLAGS += -march=armv8.3-a \
++				-fplugin=$(shell pwd)/../../work-new/paclinux/xcfi/out/xcfi.so \
++				-fplugin-arg-xcfi-no-lto \
++				${KPAC_PFLAGS} \
++				-fno-move-loop-invariants
++KBUILD_AFLAGS += -march=armv8.3-a
++
++# the follows are blacked because they are used in assembly code
++KBUILD_CFLAGS += -fplugin-arg-xcfi-black-pac=bcm2836_arm_irqchip_handle_irq
++
++# the follows are blacked because they handle pointer from userpace
++KBUILD_CFLAGS += -fplugin-arg-xcfi-black-target=sig_handler \
++				-fplugin-arg-xcfi-black-target=setup_return \
++				-fplugin-arg-xcfi-black-target=compat_setup_return \
++				-fplugin-arg-xcfi-black-target=ignore_signals \
++				-fplugin-arg-xcfi-black-target=flush_signal_handlers \
++				-fplugin-arg-xcfi-black-target=unhandled_signal \
++				-fplugin-arg-xcfi-black-target=force_sig_info \
++				-fplugin-arg-xcfi-black-target=force_sigsegv \
++				-fplugin-arg-xcfi-black-target=do_notify_parent \
++				-fplugin-arg-xcfi-black-target=do_notify_parent_cldstop \
++				-fplugin-arg-xcfi-black-target=get_signal \
++				-fplugin-arg-xcfi-black-target=kernel_sigaction \
++				-fplugin-arg-xcfi-black-target=__arm64_sys_rt_sigaction \
++				-fplugin-arg-xcfi-black-target=__arm64_compat_sys_rt_sigaction \
++				-fplugin-arg-xcfi-black-target=__arm64_compat_sys_sigaction \
++				-fplugin-arg-xcfi-black-target=sigaction \
++				-fplugin-arg-xcfi-black-target=signal \
++				-fplugin-arg-xcfi-black-target=complete_signal \
++				-fplugin-arg-xcfi-black-target=collect_sigign_sigcatch \
++				-fplugin-arg-xcfi-black-target=is_ignored
++endif
++
++ifdef CONFIG_ALTERNATIVE_KPAC_SIGN_RETURN_ADDRESS
++KBUILD_CFLAGS += -march=armv8.3-a
++KBUILD_CFLAGS += -msign-return-address=alt
++endif
++
+ ifeq ($(cc-name),clang)
+ KBUILD_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
+ KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
+diff --git a/arch/arm64/configs/tizen_bcmrpi3_defconfig b/arch/arm64/configs/tizen_bcmrpi3_defconfig
+index 79cbbf8ab7cc..995d75b3fcde 100644
+--- a/arch/arm64/configs/tizen_bcmrpi3_defconfig
++++ b/arch/arm64/configs/tizen_bcmrpi3_defconfig
+@@ -375,3 +375,7 @@ CONFIG_KGDB=y
+ CONFIG_KGDB_KDB=y
+ CONFIG_KDB_KEYBOARD=y
+ # CONFIG_STRICT_DEVMEM is not set
++CONFIG_CC_STACKPROTECTOR=y
++CONFIG_CC_STACKPROTECTOR_STRONG=y
++CONFIG_ALTERNATIVE_KPAC=y
++CONFIG_ALTERNATIVE_KPAC_SIGN_RETURN_ADDRESS=y
+diff --git a/arch/arm64/kernel/alternative.c b/arch/arm64/kernel/alternative.c
+index b5d603992d40..3d7ba9021778 100644
+--- a/arch/arm64/kernel/alternative.c
++++ b/arch/arm64/kernel/alternative.c
+@@ -174,7 +174,7 @@ static void __apply_alternatives(void *alt_region, bool is_module)
+ 		if (alt->cpufeature < ARM64_CB_PATCH)
+ 			alt_cb = patch_alternative;
+ 		else
+-			alt_cb  = ALT_REPL_PTR(alt);
++			alt_cb = voidptr_to_fnptr(ALT_REPL_PTR(alt), typeof(alt_cb));
+ 
+ 		alt_cb(alt, origptr, updptr, nr_inst);
+ 
+diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
+index 77ca59598c8b..05d2e58f2c3a 100644
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -448,6 +448,9 @@ __primary_switched:
+ 	add	sp, sp, #16
+ 	mov	x29, #0
+ 	mov	x30, #0
++#ifdef CONFIG_ALTERNATIVE_KPAC
++	bl	early_pauth_init
++#endif
+ 	b	start_kernel
+ ENDPROC(__primary_switched)
+ 
+diff --git a/arch/arm64/kernel/module.c b/arch/arm64/kernel/module.c
+index 0b368ceccee4..04702acfad1e 100644
+--- a/arch/arm64/kernel/module.c
++++ b/arch/arm64/kernel/module.c
+@@ -440,6 +440,39 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
+ 	return -ENOEXEC;
+ }
+ 
++#ifdef CONFIG_ALTERNATIVE_KPAC
++typedef void* pac_t;
++typedef struct {
++	pac_t *addr;
++	u64 buildtime_ctx;
++	u64 runtime_ctx;
++} pac_entry_t;
++
++#define IS_IN(a, min, max) ((unsigned long)(a) >= (min) && \
++							(unsigned long)(a) < (max))
++
++void module_pac_finalize(pac_entry_t *pac_table, const size_t size,
++							const struct module *me) {
++	pac_entry_t *pac_start = pac_table;
++	pac_entry_t *pac_end = pac_start + size / sizeof(pac_entry_t);
++
++	pac_entry_t *ppac;
++
++	for (ppac = pac_start; ppac < pac_end; ppac++) {
++		pac_t addr = *ppac->addr;
++		__asm__ __volatile__("EOR %0, %0, #0xffff0000\n"
++								"EOR %0, %0, #0x00001ff0\n"
++								"EOR %0, %0, #0x03000000\n"
++								"EOR %0, %0, %1\n"
++								: "=&r"(addr)
++								: "r"(ppac->buildtime_ctx ^ ppac->runtime_ctx),
++									"0"(addr));
++		*ppac->addr = addr;
++	}
++}
++#endif
++
++
+ int module_finalize(const Elf_Ehdr *hdr,
+ 		    const Elf_Shdr *sechdrs,
+ 		    struct module *me)
+@@ -455,6 +488,14 @@ int module_finalize(const Elf_Ehdr *hdr,
+ 		    !strcmp(".text.ftrace_trampoline", secstrs + s->sh_name))
+ 			me->arch.ftrace_trampoline = (void *)s->sh_addr;
+ #endif
++#ifdef CONFIG_ALTERNATIVE_KPAC
++		if (strcmp(".pac.table", secstrs + s->sh_name) == 0) {
++			preempt_disable();
++			module_pac_finalize((pac_entry_t*)s->sh_addr, s->sh_size, me);
++			preempt_enable();
++		}
++#endif
++
+ 	}
+ 
+ 	return 0;
+diff --git a/arch/arm64/kernel/setup.c b/arch/arm64/kernel/setup.c
+index b3354ff94e79..5ddf9dce56da 100644
+--- a/arch/arm64/kernel/setup.c
++++ b/arch/arm64/kernel/setup.c
+@@ -279,6 +279,34 @@ arch_initcall(reserve_memblock_reserved_regions);
+ 
+ u64 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = INVALID_HWID };
+ 
++#ifdef CONFIG_ALTERNATIVE_KPAC
++typedef void* pac_t;
++typedef struct {
++	pac_t *addr;
++	u64 buildtime_ctx;
++	u64 runtime_ctx;
++} pac_entry_t;
++
++extern pac_entry_t __pac_start[];
++extern pac_entry_t __pac_end[];
++
++void __init early_pauth_init(void)
++{
++	pac_entry_t *ppac;
++	for (ppac = __pac_start; ppac < __pac_end; ppac++) {
++		pac_t addr = *ppac->addr;
++		__asm__ __volatile__("EOR %0, %0, #0xffff0000\n"
++								"EOR %0, %0, #0x00001ff0\n"
++								"EOR %0, %0, #0x03000000\n"
++								"EOR %0, %0, %1\n"
++								: "=&r"(addr)
++								: "r"(ppac->buildtime_ctx ^ ppac->runtime_ctx),
++									"0"(addr));
++		*ppac->addr = addr;
++	}
++}
++#endif
++
+ void __init setup_arch(char **cmdline_p)
+ {
+ 	init_mm.start_code = (unsigned long) _text;
+diff --git a/arch/arm64/kernel/vmlinux.lds.S b/arch/arm64/kernel/vmlinux.lds.S
+index 74e469f8a850..0d95e2caff6f 100644
+--- a/arch/arm64/kernel/vmlinux.lds.S
++++ b/arch/arm64/kernel/vmlinux.lds.S
+@@ -132,6 +132,14 @@ SECTIONS
+ 		*(.got)			/* Global offset table		*/
+ 	}
+ 
++#ifdef CONFIG_ALTERNATIVE_KPAC
++	.pac.data : {
++		__pac_start = .;
++		KEEP(*(.pac.table))
++		__pac_end = .;
++	}
++#endif
++
+ 	. = ALIGN(SEGMENT_ALIGN);
+ 	_etext = .;			/* End of text section */
+ 
+diff --git a/crypto/drbg.c b/crypto/drbg.c
+index bc52d9562611..4f0fca437a6c 100644
+--- a/crypto/drbg.c
++++ b/crypto/drbg.c
+@@ -1964,7 +1964,7 @@ static struct rng_alg drbg_algs[22];
+  * with the kernel crypto API. To fill the array, the information
+  * from drbg_cores[] is used.
+  */
+-static inline void __init drbg_fill_array(struct rng_alg *alg,
++static void __init drbg_fill_array(struct rng_alg *alg,
+ 					  const struct drbg_core *core, int pr)
+ {
+ 	int pos = 0;
+diff --git a/drivers/base/power/runtime.c b/drivers/base/power/runtime.c
+index beb85c31f3fa..78f11b8d8510 100644
+--- a/drivers/base/power/runtime.c
++++ b/drivers/base/power/runtime.c
+@@ -18,10 +18,11 @@
+ 
+ typedef int (*pm_callback_t)(struct device *);
+ 
+-static pm_callback_t __rpm_get_callback(struct device *dev, size_t cb_offset)
++static const struct dev_pm_ops *__rpm_get_pm_ops(struct device *dev,
++													size_t cb_offset)
+ {
+-	pm_callback_t cb;
+ 	const struct dev_pm_ops *ops;
++	void *cb;
+ 
+ 	if (dev->pm_domain)
+ 		ops = &dev->pm_domain->ops;
+@@ -35,18 +36,19 @@ static pm_callback_t __rpm_get_callback(struct device *dev, size_t cb_offset)
+ 		ops = NULL;
+ 
+ 	if (ops)
+-		cb = *(pm_callback_t *)((void *)ops + cb_offset);
++		cb = *((void**)ops + cb_offset);
+ 	else
+ 		cb = NULL;
+ 
+ 	if (!cb && dev->driver && dev->driver->pm)
+-		cb = *(pm_callback_t *)((void *)dev->driver->pm + cb_offset);
++		ops = dev->driver->pm;
+ 
+-	return cb;
++	return ops;
+ }
+ 
+ #define RPM_GET_CALLBACK(dev, callback) \
+-		__rpm_get_callback(dev, offsetof(struct dev_pm_ops, callback))
++		(__rpm_get_pm_ops(dev, offsetof(struct dev_pm_ops, callback)) \
++			->callback)
+ 
+ static int rpm_resume(struct device *dev, int rpmflags);
+ static int rpm_suspend(struct device *dev, int rpmflags);
+diff --git a/drivers/clk/bcm/clk-bcm2835.c b/drivers/clk/bcm/clk-bcm2835.c
+index 3e001a7467a0..0d1a08c57d8c 100644
+--- a/drivers/clk/bcm/clk-bcm2835.c
++++ b/drivers/clk/bcm/clk-bcm2835.c
+@@ -1325,12 +1325,15 @@ static const struct clk_ops bcm2835_vpu_clock_clk_ops = {
+ static bool bcm2835_clk_is_claimed(const char *name);
+ 
+ static struct clk_hw *bcm2835_register_pll(struct bcm2835_cprman *cprman,
+-					   const struct bcm2835_pll_data *data)
++					   const void *d)
+ {
++	const struct bcm2835_pll_data *data;
+ 	struct bcm2835_pll *pll;
+ 	struct clk_init_data init;
+ 	int ret;
+ 
++	data = (const struct bcm2835_pll_data *)d;
++
+ 	memset(&init, 0, sizeof(init));
+ 
+ 	/* All of the PLLs derive from the external oscillator. */
+@@ -1359,13 +1362,16 @@ static struct clk_hw *bcm2835_register_pll(struct bcm2835_cprman *cprman,
+ 
+ static struct clk_hw *
+ bcm2835_register_pll_divider(struct bcm2835_cprman *cprman,
+-			     const struct bcm2835_pll_divider_data *data)
++				 const void *d)
+ {
++	const struct bcm2835_pll_divider_data *data;
+ 	struct bcm2835_pll_divider *divider;
+ 	struct clk_init_data init;
+ 	const char *divider_name;
+ 	int ret;
+ 
++	data = (const struct bcm2835_pll_divider_data *)d;
++
+ 	if (data->fixed_divider != 1) {
+ 		divider_name = devm_kasprintf(cprman->dev, GFP_KERNEL,
+ 					      "%s_prediv", data->name);
+@@ -1425,14 +1431,17 @@ bcm2835_register_pll_divider(struct bcm2835_cprman *cprman,
+ }
+ 
+ static struct clk_hw *bcm2835_register_clock(struct bcm2835_cprman *cprman,
+-					  const struct bcm2835_clock_data *data)
++						const void *d)
+ {
++	const struct bcm2835_clock_data *data;
+ 	struct bcm2835_clock *clock;
+ 	struct clk_init_data init;
+ 	const char *parents[1 << CM_SRC_BITS];
+ 	size_t i;
+ 	int ret;
+ 
++	data = (const struct bcm2835_clock_data *)d;
++
+ 	/*
+ 	 * Replace our strings referencing parent clocks with the
+ 	 * actual clock-output-name of the parent.
+@@ -1496,10 +1505,13 @@ static struct clk_hw *bcm2835_register_clock(struct bcm2835_cprman *cprman,
+ 	return &clock->hw;
+ }
+ 
+-static struct clk *bcm2835_register_gate(struct bcm2835_cprman *cprman,
+-					 const struct bcm2835_gate_data *data)
++static struct clk_hw *bcm2835_register_gate(struct bcm2835_cprman *cprman,
++						const void *d)
+ {
+-	return clk_register_gate(cprman->dev, data->name, data->parent,
++	const struct bcm2835_gate_data *data;
++	data = (const struct bcm2835_gate_data *)d;
++	return (struct clk_hw*)clk_register_gate(cprman->dev,
++				 data->name, data->parent,
+ 				 CLK_IGNORE_UNUSED | CLK_SET_RATE_GATE,
+ 				 cprman->regs + data->ctl_reg,
+ 				 CM_GATE_BIT, 0, &cprman->regs_lock);
+diff --git a/drivers/gpu/drm/vc4/vc4_drv.c b/drivers/gpu/drm/vc4/vc4_drv.c
+index 2cbba4dc745f..661d96b02479 100644
+--- a/drivers/gpu/drm/vc4/vc4_drv.c
++++ b/drivers/gpu/drm/vc4/vc4_drv.c
+@@ -227,6 +227,12 @@ static int compare_dev(struct device *dev, void *data)
+ 	return dev == data;
+ }
+ 
++static int vc4_platform_bus_type_match(struct device *dev, void *data)
++{
++	struct device_driver *drv = (struct device_driver *)data;
++	return platform_bus_type.match(dev, drv);
++}
++
+ static void vc4_match_add_drivers(struct device *dev,
+ 				  struct component_match **match,
+ 				  struct platform_driver *const *drivers,
+@@ -239,7 +245,7 @@ static void vc4_match_add_drivers(struct device *dev,
+ 		struct device *p = NULL, *d;
+ 
+ 		while ((d = bus_find_device(&platform_bus_type, p, drv,
+-					    (void *)platform_bus_type.match))) {
++							vc4_platform_bus_type_match))) {
+ 			put_device(p);
+ 			component_match_add(dev, match, compare_dev, d);
+ 			p = d;
+diff --git a/drivers/net/usb/usbnet.c b/drivers/net/usb/usbnet.c
+index 10854977c55f..542b80b8655a 100644
+--- a/drivers/net/usb/usbnet.c
++++ b/drivers/net/usb/usbnet.c
+@@ -1576,6 +1576,11 @@ static void usbnet_bh (struct timer_list *t)
+ 	}
+ }
+ 
++static void usbnet_bh_tasklet (unsigned long d)
++{
++	usbnet_bh((struct timer_list *)d);
++}
++
+ 
+ /*-------------------------------------------------------------------------
+  *
+@@ -1703,7 +1708,7 @@ usbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
+ 	skb_queue_head_init (&dev->txq);
+ 	skb_queue_head_init (&dev->done);
+ 	skb_queue_head_init(&dev->rxq_pause);
+-	dev->bh.func = (void (*)(unsigned long))usbnet_bh;
++	dev->bh.func = usbnet_bh_tasklet;
+ 	dev->bh.data = (unsigned long)&dev->delay;
+ 	INIT_WORK (&dev->kevent, usbnet_deferred_kevent);
+ 	init_usb_anchor(&dev->deferred);
+diff --git a/include/linux/compiler.h b/include/linux/compiler.h
+index bb22908c79e8..44c98ccc3e17 100644
+--- a/include/linux/compiler.h
++++ b/include/linux/compiler.h
+@@ -304,6 +304,38 @@ static inline void *offset_to_ptr(const int *off)
+ 	return (void *)((unsigned long)off + *off);
+ }
+ 
++#define voidptr_to_fnptr(p, type) \
++	({ \
++		void *__voidptr = (void*)(p); \
++		unsigned long __void = (__force unsigned long)__voidptr; \
++		(__force type) __void; \
++	})
++
++#define fnptr_to_voidptr(f) \
++	({ \
++		unsigned long __void = (__force unsigned long)(f); \
++		void *__voidptr = (__forcevoid*)(__void); \
++		(__force typeof(f)) __voidptr; \
++	})
++
++#define convert_to_fnptr(p) \
++	{ \
++		void **__pvoidptr = (__force void**)&(p); \
++		unsigned long __void = (__force unsigned long)*__pvoidptr; \
++		p = (__force typeof(p)) __void; \
++	}
++
++#define convert_to_voidptr(f) \
++	{ \
++		unsigned long __void = (__force unsigned long)(f); \
++		void **__pvoidptr = (__force void**)&(f); \
++		*__pvoidptr = (__force void*)(__void); \
++	}
++
++unsigned long __builtin_pac_get_context(unsigned long, ...);
++
++#define pac_bind(hint, ...) __attribute__((pacbind(hint, __VA_ARGS__)))
++
+ #endif /* __ASSEMBLY__ */
+ 
+ #ifndef __optimize
+diff --git a/include/linux/cpuidle.h b/include/linux/cpuidle.h
+index 4325d6fdde9b..3a281bc12bde 100644
+--- a/include/linux/cpuidle.h
++++ b/include/linux/cpuidle.h
+@@ -60,7 +60,7 @@ struct cpuidle_state {
+ 	 * suspended, so it must not re-enable interrupts at any point (even
+ 	 * temporarily) or attempt to change states of clock event devices.
+ 	 */
+-	void (*enter_s2idle) (struct cpuidle_device *dev,
++	int (*enter_s2idle) (struct cpuidle_device *dev,
+ 			      struct cpuidle_driver *drv,
+ 			      int index);
+ };
+diff --git a/include/linux/init.h b/include/linux/init.h
+index 2538d176dd1f..6b3339c22fa2 100644
+--- a/include/linux/init.h
++++ b/include/linux/init.h
+@@ -121,7 +121,7 @@ typedef int initcall_entry_t;
+ 
+ static inline initcall_t initcall_from_entry(initcall_entry_t *entry)
+ {
+-	return offset_to_ptr(entry);
++	return voidptr_to_fnptr(offset_to_ptr(entry), initcall_t);
+ }
+ #else
+ typedef initcall_t initcall_entry_t;
+diff --git a/include/linux/interrupt.h b/include/linux/interrupt.h
+index eeceac3376fc..1b9aeb9f2e96 100644
+--- a/include/linux/interrupt.h
++++ b/include/linux/interrupt.h
+@@ -121,7 +121,11 @@ struct irqaction {
+ 	unsigned long		thread_mask;
+ 	const char		*name;
+ 	struct proc_dir_entry	*dir;
++#ifdef CONFIG_ALTERNATIVE_KPAC
++} ____cacheline_internodealigned_in_smp pac_bind("&handler", "handler");
++#else
+ } ____cacheline_internodealigned_in_smp;
++#endif
+ 
+ extern irqreturn_t no_action(int cpl, void *dev_id);
+ 
+diff --git a/include/linux/smp.h b/include/linux/smp.h
+index 9fb239e12b82..9a7c1d9f0e7f 100644
+--- a/include/linux/smp.h
++++ b/include/linux/smp.h
+@@ -20,7 +20,11 @@ struct __call_single_data {
+ 	smp_call_func_t func;
+ 	void *info;
+ 	unsigned int flags;
++#ifdef CONFIG_ALTERNATIVE_KPAC
++} pac_bind("info", "func");
++#else
+ };
++#endif
+ 
+ /* Use __aligned() to avoid to use 2 cache lines for 1 csd */
+ typedef struct __call_single_data call_single_data_t
+diff --git a/include/linux/types.h b/include/linux/types.h
+index 9834e90aa010..318c39c02daf 100644
+--- a/include/linux/types.h
++++ b/include/linux/types.h
+@@ -224,7 +224,11 @@ struct ustat {
+ struct callback_head {
+ 	struct callback_head *next;
+ 	void (*func)(struct callback_head *head);
++#ifdef CONFIG_ALTERNATIVE_KPAC
++} __attribute__((aligned(sizeof(void *)))) __attribute__((pacbind("&func", "func")));
++#else
+ } __attribute__((aligned(sizeof(void *))));
++#endif
+ #define rcu_head callback_head
+ 
+ typedef void (*rcu_callback_t)(struct rcu_head *head);
+diff --git a/kernel/irq/manage.c b/kernel/irq/manage.c
+index cd4f9f3e8345..91f04b3c537d 100644
+--- a/kernel/irq/manage.c
++++ b/kernel/irq/manage.c
+@@ -1100,11 +1100,11 @@ static int irq_setup_forced_threading(struct irqaction *new)
+ 		new->secondary = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+ 		if (!new->secondary)
+ 			return -ENOMEM;
+-		new->secondary->handler = irq_forced_secondary_handler;
+ 		new->secondary->thread_fn = new->thread_fn;
+ 		new->secondary->dev_id = new->dev_id;
+ 		new->secondary->irq = new->irq;
+ 		new->secondary->name = new->name;
++		new->secondary->handler = irq_forced_secondary_handler;
+ 	}
+ 	/* Deal with the primary handler */
+ 	set_bit(IRQTF_FORCED_THREAD, &new->thread_flags);
+@@ -1843,11 +1843,11 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
+ 	if (!action)
+ 		return -ENOMEM;
+ 
+-	action->handler = handler;
+ 	action->thread_fn = thread_fn;
+ 	action->flags = irqflags;
+ 	action->name = devname;
+ 	action->dev_id = dev_id;
++	action->handler = handler;
+ 
+ 	retval = irq_chip_pm_get(&desc->irq_data);
+ 	if (retval < 0) {
+@@ -2151,10 +2151,10 @@ int __request_percpu_irq(unsigned int irq, irq_handler_t handler,
+ 	if (!action)
+ 		return -ENOMEM;
+ 
+-	action->handler = handler;
+ 	action->flags = flags | IRQF_PERCPU | IRQF_NO_SUSPEND;
+ 	action->name = devname;
+ 	action->percpu_dev_id = dev_id;
++	action->handler = handler;
+ 
+ 	retval = irq_chip_pm_get(&desc->irq_data);
+ 	if (retval < 0) {
+diff --git a/kernel/smp.c b/kernel/smp.c
+index 084c8b3a2681..bdaaf142e6d2 100644
+--- a/kernel/smp.c
++++ b/kernel/smp.c
+@@ -161,8 +161,8 @@ static int generic_exec_single(int cpu, call_single_data_t *csd,
+ 		return -ENXIO;
+ 	}
+ 
+-	csd->func = func;
+ 	csd->info = info;
++	csd->func = func;
+ 
+ 	/*
+ 	 * The list addition should be visible before sending the IPI
+@@ -451,8 +451,8 @@ void smp_call_function_many(const struct cpumask *mask,
+ 		csd_lock(csd);
+ 		if (wait)
+ 			csd->flags |= CSD_FLAG_SYNCHRONOUS;
+-		csd->func = func;
+ 		csd->info = info;
++		csd->func = func;
+ 		if (llist_add(&csd->llist, &per_cpu(call_single_queue, cpu)))
+ 			__cpumask_set_cpu(cpu, cfd->cpumask_ipi);
+ 	}
+diff --git a/net/ipv4/ip_input.c b/net/ipv4/ip_input.c
+index c3a0683e83df..ecde658f4db7 100644
+--- a/net/ipv4/ip_input.c
++++ b/net/ipv4/ip_input.c
+@@ -322,7 +322,7 @@ static int ip_rcv_finish_core(struct net *net, struct sock *sk,
+ 		int protocol = iph->protocol;
+ 
+ 		ipprot = rcu_dereference(inet_protos[protocol]);
+-		if (ipprot && (edemux = READ_ONCE(ipprot->early_demux))) {
++		if (ipprot && (edemux = ipprot->early_demux)) {
+ 			err = edemux(skb);
+ 			if (unlikely(err))
+ 				goto drop_error;
+diff --git a/net/ipv6/ip6_input.c b/net/ipv6/ip6_input.c
+index 6b74523fc1c4..3590e23325d3 100644
+--- a/net/ipv6/ip6_input.c
++++ b/net/ipv6/ip6_input.c
+@@ -56,7 +56,7 @@ static void ip6_rcv_finish_core(struct net *net, struct sock *sk,
+ 		const struct inet6_protocol *ipprot;
+ 
+ 		ipprot = rcu_dereference(inet6_protos[ipv6_hdr(skb)->nexthdr]);
+-		if (ipprot && (edemux = READ_ONCE(ipprot->early_demux)))
++		if (ipprot && (edemux = ipprot->early_demux))
+ 			edemux(skb);
+ 	}
+ 	if (!skb_valid_dst(skb))
+diff --git a/security/Kconfig b/security/Kconfig
+index d9aa521b5206..73adbc563fd0 100644
+--- a/security/Kconfig
++++ b/security/Kconfig
+@@ -276,5 +276,32 @@ config DEFAULT_SECURITY
+ 	default "apparmor" if DEFAULT_SECURITY_APPARMOR
+ 	default "" if DEFAULT_SECURITY_DAC
+ 
++config ALTERNATIVE_KPAC
++	bool "Enable an alternative of ARM's PAC for Linux"
++	depends on !ARM64_PTR_AUTH
++	depends on ARM64
++	help
++	  This enables an alternative of ARM PAC,
++	  which uses a kind of anlalgoues of PAC operations.
++	  In the other words, it does not use real PAC operations.
++	  It can be used on the machine does not have ARM PAC support
++
++	  But it is totally unsafe because it does not have sophiscated
++	  authentication model using secure keys.
++
++	  If you are unsure how to answer this question, answer N.
++
++config ALTERNATIVE_KPAC_SIGN_RETURN_ADDRESS
++	bool "Enable an alternative of ARM's Signing return address for Linux"
++	depends on !ARM64_PTR_AUTH
++	depends on ARM64
++	depends on $(cc-option,-msign-return-address=alt)
++	depends on STACKPROTECTOR_STRONG
++	depends on STACKPROTECTOR
++	help
++	  This enables -msign-return-address=alt in gcc.
++
++	  If you are unsure how to answer this question, answer N.
++
+ endmenu
+ 
+-- 
+2.17.1
+

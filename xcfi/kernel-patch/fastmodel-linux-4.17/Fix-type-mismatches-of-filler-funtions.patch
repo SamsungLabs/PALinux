@@ -1,0 +1,388 @@
+From 02dfd961fdab711b37aa801766c9122fa3ad1066 Mon Sep 17 00:00:00 2001
+From: Sami Tolvanen <samitolvanen@google.com>
+Date: Wed, 25 Apr 2018 16:08:11 -0700
+Subject: [PATCH 1/7] ANDROID: mm: fix filler function type mismatch
+
+Bug: 67506682
+Change-Id: I6f615164ccd86b407540ada9bbcb39d910395db9
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+---
+ include/linux/pagemap.h | 4 ++--
+ mm/filemap.c            | 6 +++---
+ mm/readahead.c          | 2 +-
+ 3 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index b1bd2186e6d2..f24b02098061 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -239,7 +239,7 @@ static inline gfp_t readahead_gfp_mask(struct address_space *x)
+ 	return mapping_gfp_mask(x) | __GFP_NORETRY | __GFP_NOWARN;
+ }
+ 
+-typedef int filler_t(void *, struct page *);
++typedef int filler_t(struct file *, struct page *);
+ 
+ pgoff_t page_cache_next_hole(struct address_space *mapping,
+ 			     pgoff_t index, unsigned long max_scan);
+@@ -398,7 +398,7 @@ extern int read_cache_pages(struct address_space *mapping,
+ static inline struct page *read_mapping_page(struct address_space *mapping,
+ 				pgoff_t index, void *data)
+ {
+-	filler_t *filler = (filler_t *)mapping->a_ops->readpage;
++	filler_t *filler = mapping->a_ops->readpage;
+ 	return read_cache_page(mapping, index, filler, data);
+ }
+ 
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 0604cb02e6f3..3addfe43e242 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -2780,7 +2780,7 @@ static struct page *wait_on_page_read(struct page *page)
+ 
+ static struct page *do_read_cache_page(struct address_space *mapping,
+ 				pgoff_t index,
+-				int (*filler)(void *, struct page *),
++				int (*filler)(struct file *, struct page *),
+ 				void *data,
+ 				gfp_t gfp)
+ {
+@@ -2887,7 +2887,7 @@ static struct page *do_read_cache_page(struct address_space *mapping,
+  */
+ struct page *read_cache_page(struct address_space *mapping,
+ 				pgoff_t index,
+-				int (*filler)(void *, struct page *),
++				int (*filler)(struct file *, struct page *),
+ 				void *data)
+ {
+ 	return do_read_cache_page(mapping, index, filler, data, mapping_gfp_mask(mapping));
+@@ -2909,7 +2909,7 @@ struct page *read_cache_page_gfp(struct address_space *mapping,
+ 				pgoff_t index,
+ 				gfp_t gfp)
+ {
+-	filler_t *filler = (filler_t *)mapping->a_ops->readpage;
++	filler_t *filler = mapping->a_ops->readpage;
+ 
+ 	return do_read_cache_page(mapping, index, filler, NULL, gfp);
+ }
+diff --git a/mm/readahead.c b/mm/readahead.c
+index 539bbb6c1fad..135bfcc5ea6f 100644
+--- a/mm/readahead.c
++++ b/mm/readahead.c
+@@ -81,7 +81,7 @@ static void read_cache_pages_invalidate_pages(struct address_space *mapping,
+  * Hides the details of the LRU cache etc from the filesystems.
+  */
+ int read_cache_pages(struct address_space *mapping, struct list_head *pages,
+-			int (*filler)(void *, struct page *), void *data)
++			int (*filler)(struct file *, struct page *), void *data)
+ {
+ 	struct page *page;
+ 	int ret = 0;
+-- 
+2.17.1
+
+
+From cd1f77f039974986de5b9da07af6f71c71e4a24b Mon Sep 17 00:00:00 2001
+From: Sami Tolvanen <samitolvanen@google.com>
+Date: Tue, 13 Feb 2018 13:01:39 -0800
+Subject: [PATCH 2/7] ANDROID: fs: nfs: fix filler function type
+
+Bug: 67506682
+Change-Id: I04d4b1b9ab0720a4f342d6617dd132de8654b94c
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+---
+ fs/nfs/dir.c     | 5 +++--
+ fs/nfs/read.c    | 2 +-
+ fs/nfs/symlink.c | 5 +++--
+ 3 files changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/fs/nfs/dir.c b/fs/nfs/dir.c
+index 73f8b43d988c..4247d09b54d1 100644
+--- a/fs/nfs/dir.c
++++ b/fs/nfs/dir.c
+@@ -664,8 +664,9 @@ int nfs_readdir_xdr_to_array(nfs_readdir_descriptor_t *desc, struct page *page,
+  * We only need to convert from xdr once so future lookups are much simpler
+  */
+ static
+-int nfs_readdir_filler(nfs_readdir_descriptor_t *desc, struct page* page)
++int nfs_readdir_filler(struct file *file, struct page* page)
+ {
++	nfs_readdir_descriptor_t *desc = (nfs_readdir_descriptor_t *)file;
+ 	struct inode	*inode = file_inode(desc->file);
+ 	int ret;
+ 
+@@ -698,7 +699,7 @@ static
+ struct page *get_cache_page(nfs_readdir_descriptor_t *desc)
+ {
+ 	return read_cache_page(desc->file->f_mapping,
+-			desc->page_index, (filler_t *)nfs_readdir_filler, desc);
++			desc->page_index, nfs_readdir_filler, desc);
+ }
+ 
+ /*
+diff --git a/fs/nfs/read.c b/fs/nfs/read.c
+index 48d7277c60a9..42dbf4f4d5aa 100644
+--- a/fs/nfs/read.c
++++ b/fs/nfs/read.c
+@@ -354,7 +354,7 @@ struct nfs_readdesc {
+ };
+ 
+ static int
+-readpage_async_filler(void *data, struct page *page)
++readpage_async_filler(struct file *data, struct page *page)
+ {
+ 	struct nfs_readdesc *desc = (struct nfs_readdesc *)data;
+ 	struct nfs_page *new;
+diff --git a/fs/nfs/symlink.c b/fs/nfs/symlink.c
+index 06eb44b47885..220d5ba2bd9b 100644
+--- a/fs/nfs/symlink.c
++++ b/fs/nfs/symlink.c
+@@ -26,8 +26,9 @@
+  * and straight-forward than readdir caching.
+  */
+ 
+-static int nfs_symlink_filler(struct inode *inode, struct page *page)
++static int nfs_symlink_filler(struct file *file, struct page *page)
+ {
++	struct inode *inode = (struct inode *)file;
+ 	int error;
+ 
+ 	error = NFS_PROTO(inode)->readlink(inode, page, 0, PAGE_SIZE);
+@@ -66,7 +67,7 @@ static const char *nfs_get_link(struct dentry *dentry,
+ 		if (err)
+ 			return err;
+ 		page = read_cache_page(&inode->i_data, 0,
+-					(filler_t *)nfs_symlink_filler, inode);
++					nfs_symlink_filler, inode);
+ 		if (IS_ERR(page))
+ 			return ERR_CAST(page);
+ 	}
+-- 
+2.17.1
+
+
+From dec82f29705d94466c39ebb14908336bd87b41e8 Mon Sep 17 00:00:00 2001
+From: Sami Tolvanen <samitolvanen@google.com>
+Date: Fri, 2 Mar 2018 09:02:16 -0800
+Subject: [PATCH 3/7] ANDROID: fs: afs: fix filler function type
+
+Bug: 67506682
+Change-Id: I76d208c8606ee5af144891d14bd309912d4d788d
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+---
+ fs/afs/file.c     | 14 ++++++++++----
+ fs/afs/internal.h |  2 +-
+ 2 files changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/fs/afs/file.c b/fs/afs/file.c
+index 7d4f26198573..b95ff424bd08 100644
+--- a/fs/afs/file.c
++++ b/fs/afs/file.c
+@@ -260,12 +260,11 @@ int afs_fetch_data(struct afs_vnode *vnode, struct key *key, struct afs_read *de
+ /*
+  * read page from file, directory or symlink, given a key to use
+  */
+-int afs_page_filler(void *data, struct page *page)
++static int __afs_page_filler(struct key *key, struct page *page)
+ {
+ 	struct inode *inode = page->mapping->host;
+ 	struct afs_vnode *vnode = AFS_FS_I(inode);
+ 	struct afs_read *req;
+-	struct key *key = data;
+ 	int ret;
+ 
+ 	_enter("{%x},{%lu},{%lu}", key_serial(key), inode->i_ino, page->index);
+@@ -372,6 +371,13 @@ int afs_page_filler(void *data, struct page *page)
+ 	return ret;
+ }
+ 
++int afs_page_filler(struct file *data, struct page *page)
++{
++	struct key *key = (struct key *)data;
++
++	return __afs_page_filler(key, page);
++}
++
+ /*
+  * read page from file, directory or symlink, given a file to nominate the key
+  * to be used
+@@ -384,14 +390,14 @@ static int afs_readpage(struct file *file, struct page *page)
+ 	if (file) {
+ 		key = afs_file_key(file);
+ 		ASSERT(key != NULL);
+-		ret = afs_page_filler(key, page);
++		ret = __afs_page_filler(key, page);
+ 	} else {
+ 		struct inode *inode = page->mapping->host;
+ 		key = afs_request_key(AFS_FS_S(inode->i_sb)->cell);
+ 		if (IS_ERR(key)) {
+ 			ret = PTR_ERR(key);
+ 		} else {
+-			ret = afs_page_filler(key, page);
++			ret = __afs_page_filler(key, page);
+ 			key_put(key);
+ 		}
+ 	}
+diff --git a/fs/afs/internal.h b/fs/afs/internal.h
+index e3f8a46663db..6ef574470949 100644
+--- a/fs/afs/internal.h
++++ b/fs/afs/internal.h
+@@ -733,7 +733,7 @@ extern void afs_put_wb_key(struct afs_wb_key *);
+ extern int afs_open(struct inode *, struct file *);
+ extern int afs_release(struct inode *, struct file *);
+ extern int afs_fetch_data(struct afs_vnode *, struct key *, struct afs_read *);
+-extern int afs_page_filler(void *, struct page *);
++extern int afs_page_filler(struct file *, struct page *);
+ extern void afs_put_read(struct afs_read *);
+ 
+ /*
+-- 
+2.17.1
+
+
+From 49c58f15c5f3d3d4445cf642a3b1bab17c49fb09 Mon Sep 17 00:00:00 2001
+From: Sami Tolvanen <samitolvanen@google.com>
+Date: Fri, 2 Mar 2018 09:04:53 -0800
+Subject: [PATCH 4/7] ANDROID: fs: exofs: fix filler function type
+
+Bug: 67506682
+Change-Id: I42f297bfe07a1b7916790415f35ad4f2574ceec7
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+---
+ fs/exofs/inode.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/fs/exofs/inode.c b/fs/exofs/inode.c
+index 0ac62811b341..f17715d140b5 100644
+--- a/fs/exofs/inode.c
++++ b/fs/exofs/inode.c
+@@ -377,9 +377,8 @@ static int read_exec(struct page_collect *pcol)
+  * and will start a new collection. Eventually caller must submit the last
+  * segment if present.
+  */
+-static int readpage_strip(void *data, struct page *page)
++static int __readpage_strip(struct page_collect *pcol, struct page *page)
+ {
+-	struct page_collect *pcol = data;
+ 	struct inode *inode = pcol->inode;
+ 	struct exofs_i_info *oi = exofs_i(inode);
+ 	loff_t i_size = i_size_read(inode);
+@@ -470,6 +469,13 @@ static int readpage_strip(void *data, struct page *page)
+ 	return ret;
+ }
+ 
++static int readpage_strip(struct file *data, struct page *page)
++{
++	struct page_collect *pcol = (struct page_collect *)data;
++
++	return __readpage_strip(pcol, page);
++}
++
+ static int exofs_readpages(struct file *file, struct address_space *mapping,
+ 			   struct list_head *pages, unsigned nr_pages)
+ {
+@@ -499,7 +505,7 @@ static int _readpage(struct page *page, bool read_4_write)
+ 	_pcol_init(&pcol, 1, page->mapping->host);
+ 
+ 	pcol.read_4_write = read_4_write;
+-	ret = readpage_strip(&pcol, page);
++	ret = __readpage_strip(&pcol, page);
+ 	if (ret) {
+ 		EXOFS_ERR("_readpage => %d\n", ret);
+ 		return ret;
+-- 
+2.17.1
+
+
+From 4d43821a28407166ccd1b2a773887a2ba7349df7 Mon Sep 17 00:00:00 2001
+From: Sami Tolvanen <samitolvanen@google.com>
+Date: Fri, 2 Mar 2018 09:06:24 -0800
+Subject: [PATCH 5/7] ANDROID: fs: gfs2: fix filler function type
+
+Bug: 67506682
+Change-Id: I50a3f85965de6e041d0f40e7bf9c2ced15ccfd49
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+---
+ fs/gfs2/aops.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fs/gfs2/aops.c b/fs/gfs2/aops.c
+index f58716567972..12366fd57573 100644
+--- a/fs/gfs2/aops.c
++++ b/fs/gfs2/aops.c
+@@ -509,7 +509,7 @@ static int stuffed_readpage(struct gfs2_inode *ip, struct page *page)
+  * called by gfs2_readpage() once the required lock has been granted.
+  */
+ 
+-static int __gfs2_readpage(void *file, struct page *page)
++static int __gfs2_readpage(struct file *file, struct page *page)
+ {
+ 	struct gfs2_inode *ip = GFS2_I(page->mapping->host);
+ 	struct gfs2_sbd *sdp = GFS2_SB(page->mapping->host);
+-- 
+2.17.1
+
+
+From 09466cec55dcf25e5cdec79ce404bacaabc15a37 Mon Sep 17 00:00:00 2001
+From: Sami Tolvanen <samitolvanen@google.com>
+Date: Fri, 2 Mar 2018 13:05:33 -0800
+Subject: [PATCH 6/7] ANDROID: staging: lustre: fix filler function type
+
+Bug: 67506682
+Change-Id: I3a65178adb47119a3dcbc6ca4bcf350085a73ffc
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+---
+ drivers/staging/lustre/lustre/mdc/mdc_request.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/staging/lustre/lustre/mdc/mdc_request.c b/drivers/staging/lustre/lustre/mdc/mdc_request.c
+index 8ee7b4d273b2..715446ea4c9a 100644
+--- a/drivers/staging/lustre/lustre/mdc/mdc_request.c
++++ b/drivers/staging/lustre/lustre/mdc/mdc_request.c
+@@ -1120,9 +1120,9 @@ struct readpage_param {
+  * in PAGE_SIZE (if PAGE_SIZE greater than LU_PAGE_SIZE), and the
+  * lu_dirpage for this integrated page will be adjusted.
+  **/
+-static int mdc_read_page_remote(void *data, struct page *page0)
++static int mdc_read_page_remote(struct file *data, struct page *page0)
+ {
+-	struct readpage_param *rp = data;
++	struct readpage_param *rp = (struct readpage_param *)data;
+ 	struct page **page_pool;
+ 	struct page *page;
+ 	struct lu_dirpage *dp;
+-- 
+2.17.1
+
+
+From 5f14fdf4a10a0f7e939902e52f9b6e591fa08be0 Mon Sep 17 00:00:00 2001
+From: Sami Tolvanen <samitolvanen@google.com>
+Date: Wed, 25 Apr 2018 16:08:28 -0700
+Subject: [PATCH 7/7] ANDROID: fs: fuse: fix filler function type mismatch
+
+Bug: 67506682
+Change-Id: Iabe7cdcc90dd2ea62976860531b8cbfcd76bd64b
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+---
+ fs/fuse/file.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+index a201fb0ac64f..f4b9e1222f1f 100644
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -837,9 +837,9 @@ struct fuse_fill_data {
+ 	unsigned nr_pages;
+ };
+ 
+-static int fuse_readpages_fill(void *_data, struct page *page)
++static int fuse_readpages_fill(struct file *_data, struct page *page)
+ {
+-	struct fuse_fill_data *data = _data;
++	struct fuse_fill_data *data = (struct fuse_fill_data *)_data;
+ 	struct fuse_req *req = data->req;
+ 	struct inode *inode = data->inode;
+ 	struct fuse_conn *fc = get_fuse_conn(inode);
+-- 
+2.17.1
+

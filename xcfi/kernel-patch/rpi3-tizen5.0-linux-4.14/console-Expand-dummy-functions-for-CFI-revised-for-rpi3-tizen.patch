@@ -1,0 +1,197 @@
+From ca7dbe0df4c0e39f0b885e658937e0446dfa4f95 Mon Sep 17 00:00:00 2001
+From: Kees Cook <keescook@chromium.org>
+Date: Mon, 26 Feb 2018 16:04:20 -0800
+Subject: [PATCH] console: Expand dummy functions for CFI
+
+This expands the no-op dummy functions into full prototypes to avoid
+indirect call mismatches when running under Control Flow Integrity
+checking, like with Clang's -fsanitize=cfi.
+
+Co-Developed-by: Sami Tolvanen <samitolvanen@google.com>
+Signed-off-by: Sami Tolvanen <samitolvanen@google.com>
+Signed-off-by: Kees Cook <keescook@chromium.org>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+
+diff --git a/drivers/video/console/dummycon.c b/drivers/video/console/dummycon.c
+index b90ef96e43d6..f2eafe2ed980 100644
+--- a/drivers/video/console/dummycon.c
++++ b/drivers/video/console/dummycon.c
+@@ -41,12 +41,47 @@ static void dummycon_init(struct vc_data *vc, int init)
+ 	vc_resize(vc, DUMMY_COLUMNS, DUMMY_ROWS);
+ }
+ 
+-static int dummycon_dummy(void)
++static void dummycon_deinit(struct vc_data *vc) { }
++static void dummycon_clear(struct vc_data *vc, int sy, int sx, int height,
++			   int width) { }
++static void dummycon_putc(struct vc_data *vc, int c, int ypos, int xpos) { }
++static void dummycon_putcs(struct vc_data *vc, const unsigned short *s,
++			   int count, int ypos, int xpos) { }
++static void dummycon_cursor(struct vc_data *vc, int mode) { }
++
++static bool dummycon_scroll(struct vc_data *vc, unsigned int top,
++			    unsigned int bottom, enum con_scroll dir,
++			    unsigned int lines)
++{
++	return false;
++}
++
++static int dummycon_switch(struct vc_data *vc)
+ {
+-    return 0;
++	return 0;
+ }
+ 
+-#define DUMMY	(void *)dummycon_dummy
++static int dummycon_blank(struct vc_data *vc, int blank, int mode_switch)
++{
++	return 0;
++}
++
++static int dummycon_font_set(struct vc_data *vc, struct console_font *font,
++			     unsigned int flags)
++{
++	return 0;
++}
++
++static int dummycon_font_default(struct vc_data *vc,
++				 struct console_font *font, char *name)
++{
++	return 0;
++}
++
++static int dummycon_font_copy(struct vc_data *vc, int con)
++{
++	return 0;
++}
+ 
+ /*
+  *  The console `switch' structure for the dummy console
+@@ -55,19 +90,19 @@ static int dummycon_dummy(void)
+  */
+ 
+ const struct consw dummy_con = {
+-    .owner =		THIS_MODULE,
+-    .con_startup =	dummycon_startup,
+-    .con_init =		dummycon_init,
+-    .con_deinit =	DUMMY,
+-    .con_clear =	DUMMY,
+-    .con_putc =		DUMMY,
+-    .con_putcs =	DUMMY,
+-    .con_cursor =	DUMMY,
+-    .con_scroll =	DUMMY,
+-    .con_switch =	DUMMY,
+-    .con_blank =	DUMMY,
+-    .con_font_set =	DUMMY,
+-    .con_font_default =	DUMMY,
+-    .con_font_copy =	DUMMY,
++	.owner =		THIS_MODULE,
++	.con_startup =	dummycon_startup,
++	.con_init =		dummycon_init,
++	.con_deinit =	dummycon_deinit,
++	.con_clear =	dummycon_clear,
++	.con_putc =		dummycon_putc,
++	.con_putcs =	dummycon_putcs,
++	.con_cursor =	dummycon_cursor,
++	.con_scroll =	dummycon_scroll,
++	.con_switch =	dummycon_switch,
++	.con_blank =	dummycon_blank,
++	.con_font_set =	dummycon_font_set,
++	.con_font_default =	dummycon_font_default,
++	.con_font_copy =	dummycon_font_copy,
+ };
+ EXPORT_SYMBOL_GPL(dummy_con);
+diff --git a/drivers/video/console/newport_con.c b/drivers/video/console/newport_con.c
+index 42d02a206059..6897bd0fc00e 100644
+--- a/drivers/video/console/newport_con.c
++++ b/drivers/video/console/newport_con.c
+@@ -673,14 +673,14 @@ static bool newport_scroll(struct vc_data *vc, unsigned int t, unsigned int b,
+ 	return true;
+ }
+ 
+-static int newport_dummy(struct vc_data *c)
++static int newport_set_origin(struct vc_data *vc)
+ {
+ 	return 0;
+ }
+ 
+-#define DUMMY (void *) newport_dummy
++static void newport_save_screen(struct vc_data *vc) { }
+ 
+-const struct consw newport_con = {
++static const struct consw newport_con = {
+ 	.owner		  = THIS_MODULE,
+ 	.con_startup	  = newport_startup,
+ 	.con_init	  = newport_init,
+@@ -694,8 +694,8 @@ const struct consw newport_con = {
+ 	.con_blank	  = newport_blank,
+ 	.con_font_set	  = newport_font_set,
+ 	.con_font_default = newport_font_default,
+-	.con_set_origin	  = DUMMY,
+-	.con_save_screen  = DUMMY
++	.con_set_origin	  = newport_set_origin,
++	.con_save_screen  = newport_save_screen
+ };
+ 
+ static int newport_probe(struct gio_device *dev,
+diff --git a/drivers/video/console/vgacon.c b/drivers/video/console/vgacon.c
+index a17ba1465815..f09e17b60e45 100644
+--- a/drivers/video/console/vgacon.c
++++ b/drivers/video/console/vgacon.c
+@@ -1272,7 +1272,8 @@ static int vgacon_adjust_height(struct vc_data *vc, unsigned fontheight)
+ 	return 0;
+ }
+ 
+-static int vgacon_font_set(struct vc_data *c, struct console_font *font, unsigned flags)
++static int vgacon_font_set(struct vc_data *c, struct console_font *font,
++			   unsigned int flags)
+ {
+ 	unsigned charcount = font->charcount;
+ 	int rc;
+@@ -1407,21 +1408,20 @@ static bool vgacon_scroll(struct vc_data *c, unsigned int t, unsigned int b,
+  *  The console `switch' structure for the VGA based console
+  */
+ 
+-static int vgacon_dummy(struct vc_data *c)
+-{
+-	return 0;
+-}
+-
+-#define DUMMY (void *) vgacon_dummy
++static void vgacon_clear(struct vc_data *vc, int sy, int sx, int height,
++			 int width) { }
++static void vgacon_putc(struct vc_data *vc, int c, int ypos, int xpos) { }
++static void vgacon_putcs(struct vc_data *vc, const unsigned short *s,
++			 int count, int ypos, int xpos) { }
+ 
+ const struct consw vga_con = {
+ 	.owner = THIS_MODULE,
+ 	.con_startup = vgacon_startup,
+ 	.con_init = vgacon_init,
+ 	.con_deinit = vgacon_deinit,
+-	.con_clear = DUMMY,
+-	.con_putc = DUMMY,
+-	.con_putcs = DUMMY,
++	.con_clear = vgacon_clear,
++	.con_putc = vgacon_putc,
++	.con_putcs = vgacon_putcs,
+ 	.con_cursor = vgacon_cursor,
+ 	.con_scroll = vgacon_scroll,
+ 	.con_switch = vgacon_switch,
+diff --git a/drivers/video/fbdev/core/fbcon.c b/drivers/video/fbdev/core/fbcon.c
+index 04612f938bab..235d549d5958 100644
+--- a/drivers/video/fbdev/core/fbcon.c
++++ b/drivers/video/fbdev/core/fbcon.c
+@@ -2588,7 +2588,8 @@ static int fbcon_copy_font(struct vc_data *vc, int con)
+  *  is ever implemented.
+  */
+ 
+-static int fbcon_set_font(struct vc_data *vc, struct console_font *font, unsigned flags)
++static int fbcon_set_font(struct vc_data *vc, struct console_font *font,
++			  unsigned int flags)
+ {
+ 	struct fb_info *info = registered_fb[con2fb_map[vc->vc_num]];
+ 	unsigned charcount = font->charcount;
+-- 
+2.17.1
+
