@@ -3,7 +3,7 @@
 **Running static validator**
 
 1. Check prebuilt dump files in /prebuilt.
-
+   - Download `ios.dump` and `pal-dump.zip` from release assets (`Releases/static-validator-prebuilts`)
    - iOS : ios.dump (this is a dump file for iOS kernel binary on which PA is applied)
    - PAL : pal.dump (this is a dump file built in development stage not the final stage) after decompression with `unzip pal-dump.zip`.
    - PARTS : we do not provide prebuilt file for PARTS
